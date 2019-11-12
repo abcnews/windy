@@ -1,23 +1,19 @@
-// 'use strict';
-//
-// exports.http = (request, response) => {
-//   response.status(200).send('Hello World!');
-// };
-//
-// exports.event = (event, callback) => {
-//   callback();
-// };
-
-const { Storage } = require("@google-cloud/storage");
-// Creates a client
-const storage = new Storage();
-
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
 const fetch = require("node-fetch");
 const cheerio = require("cheerio");
-const { zonedTimeToUtc, format } = require("date-fns-tz");
-const { parse } = require("date-fns");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
+const currentFile = "current.json";
 const now = new Date();
+admin.initializeApp();
+
+exports.scrape = functions.pubsub.topic("update").onPublish(message => {
+  return scrape();
+});
+
 const scrape = async () => {
   const req = await fetch(
     "http://www.bom.gov.au/nsw/observations/nswall.shtml"
@@ -37,7 +33,7 @@ const scrape = async () => {
     $rows.each(function() {
       const $row = $(this);
       const $children = $row.children();
-      const time = parse(`${$children.eq(1).text()}+11`, "d/h:mmax", now);
+
       const id = $children
         .eq(0)
         .find("a")
@@ -74,30 +70,25 @@ const scrape = async () => {
         });
     })
   );
-
-  // uploadFile();
-  console.log(json);
+  console.log("before-save");
+  await saveFile(json);
 };
 
-const bucketName = "windy-state";
-const filename = "current.csv";
+async function saveFile(data) {
+  const tempLocalFile = path.join(os.tmpdir(), currentFile);
 
-async function uploadFile() {
-  // Uploads a local file to the bucket
-  await storage.bucket(bucketName).upload(filename, {
-    // Support for HTTP requests made with `Accept-Encoding: gzip`
-    gzip: true,
-    // By setting the option `destination`, you can change the name of the
-    // object you are uploading to a bucket.
-    metadata: {
-      // Enable long-lived HTTP caching headers
-      // Use only if the contents of the file will never change
-      // (If the contents will change, use cacheControl: 'no-cache')
-      cacheControl: "no-cache"
-    }
+  fs.writeFileSync(tempLocalFile, JSON.stringify(data));
+  const bucket = admin.storage().bucket("windy-258800.appspot.com");
+  const metadata = {
+    contentType: "text/json",
+    "Cache-Control": "no-cache"
+  };
+  await bucket.upload(tempLocalFile, { destination: currentFile, metadata });
+  await bucket.upload(tempLocalFile, {
+    destination: `${Date.now()}.json`,
+    metadata
   });
-
-  console.log(`${filename} uploaded to ${bucketName}.`);
+  fs.unlinkSync(tempLocalFile);
+  console.log("Saved to database.");
+  return "fin";
 }
-
-scrape().catch(console.error);

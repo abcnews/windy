@@ -1,76 +1,28 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
-const cheerio = require("cheerio");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-
-const currentFile = "current.json";
+const {
+  getStationIds,
+  getStationsData,
+  extractMinimumData
+} = require("./lib/funcs");
+const currentFile = "latest.json";
 const now = new Date();
 admin.initializeApp();
 
-exports.scrape = functions.pubsub.topic("update").onPublish(message => {
-  return scrape();
-});
+exports.scrape = functions
+  .runWith({ memory: "1GB" })
+  .pubsub.topic("update")
+  .onPublish(message => {
+    return scrape();
+  });
 
 const scrape = async () => {
-  const req = await fetch(
-    "http://www.bom.gov.au/nsw/observations/nswall.shtml"
-  );
-  const html = await req.text();
-  const $ = cheerio.load(html);
-
-  const $tables = $(".tabledata");
-
-  let data = [];
-
-  $tables.each(function(i, el) {
-    const $table = $(this);
-    const region = $table.prev().text();
-    const $rows = $("tbody>tr", $table);
-
-    $rows.each(function() {
-      const $row = $(this);
-      const $children = $row.children();
-
-      const id = $children
-        .eq(0)
-        .find("a")
-        .attr("href")
-        .match(/IDN[0-9]+\.[0-9]+/)[0];
-      const row = { id, region };
-      data.push(row);
-    });
-  });
-  const json = await Promise.all(
-    data.map(d => {
-      return fetch(
-        `http://www.bom.gov.au/fwo/${d.id.split(".")[0]}/${d.id}.json`
-      )
-        .then(res => res.json())
-        .then(json => {
-          const {
-            name,
-            local_date_time_full,
-            lat,
-            lon,
-            wind_dir,
-            wind_spd_kmh
-          } = json.observations.data[0];
-          return {
-            region: d.region,
-            name,
-            local_date_time_full,
-            lat,
-            lon,
-            wind_dir,
-            wind_spd_kmh
-          };
-        });
-    })
-  );
-  console.log("before-save");
+  const stations = await getStationIds();
+  const json = extractMinimumData(await getStationsData(stations));
   await saveFile(json);
 };
 
@@ -83,10 +35,10 @@ async function saveFile(data) {
     contentType: "text/json",
     "Cache-Control": "no-cache"
   };
-  await bucket.upload(tempLocalFile, { destination: currentFile, metadata });
   await bucket.upload(tempLocalFile, {
-    destination: `${Date.now()}.json`,
-    metadata
+    destination: currentFile,
+    metadata,
+    resumable: false
   });
   fs.unlinkSync(tempLocalFile);
   console.log("Saved to database.");
